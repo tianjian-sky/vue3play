@@ -39,6 +39,10 @@ export default {
   name: 'HelloWorld',
   props: {
     msg: String
+  },
+  setup(props) {
+    console.log('setup api:', props) // { user: '' }
+    return {} // anything returned here will be available for the rest of the component
   }
 }
 </script>
