@@ -2,9 +2,9 @@ import mockData from '../configs/mockData'
 
 
 export default {
-    fetchRaces () {
+    fetchRaces (version) {
         return new Promise((res) => {
-            res(mockData.RACES)
+            res(mockData.RACES.map(r => r.version = version))
         })
     }
 }
