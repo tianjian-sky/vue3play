@@ -1,6 +1,6 @@
 <script>
 import { fetchRaces } from '../services'
-import { ref, onBeforeMount, onMounted, onUpdated, onBeforeUpdate, onErrorCaptured, onBeforeUnmount, onUnmounted } from 'vue'
+import { ref, toRefs, watch, computed,  onBeforeMount, onMounted, onUpdated, onBeforeUpdate, onErrorCaptured, onBeforeUnmount, onUnmounted } from 'vue'
 
 export default {
   name: 'Races',
@@ -8,6 +8,9 @@ export default {
     version: {
       type: [Number, String],
       default: 1.27
+    },
+    user: {
+      type: String,
     }
   },
   setup (props) {
@@ -16,9 +19,25 @@ export default {
      */
     const races = ref([])
 
+    console.warn('cba', fetchRaces)
     const getRaces = async () => {
       races.value = await fetchRaces(props.version)
     }
+
+    /**
+     * watch , toRef
+     */
+    const { user } = toRefs(props)
+    const getUserRepositories = async (newV, oldV) => {
+      console.warn('watch到变更', newV, oldV)
+    }
+    watch(user, getUserRepositories)
+
+    /**
+     * computed
+     */
+    const twiceTheCounter = computed(() => user.value + '--> computedValue')
+    console.log(twiceTheCounter.value) // 2
 
     /**
      * Lifecycle Hook Registration Inside setup
@@ -32,7 +51,7 @@ export default {
     onUpdated(() => {
       console.log('onUpdated:setup lifecyclehook', this)
     })
-    onMounted(this.getUserRepositories)
+    onMounted(getRaces)
     onBeforeUnmount(() => {
       console.log('onBeforeUnmount:setup lifecyclehook', this)
     })
@@ -73,9 +92,6 @@ export default {
     updateFilters (kword) { 
       this.searchQuery = kword
     }
-  },
-  mounted () {
-    this.getRaces()
   }
 }
 </script>
