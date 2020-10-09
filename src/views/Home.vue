@@ -24,7 +24,6 @@ export default {
     // 接收props
     // const { user, version } = toRefs(props)
     
-    
     const version = ref('1.27')
     const user = ref('tj-sky')
 
