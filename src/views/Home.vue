@@ -19,11 +19,32 @@ export default {
     Heros,
     Banner,
   },
-  setup(props) {
+  /** ！！
+   * When setup is executed, the component instance has not been created yet. As a result, you will only be able to access the following properties:
+      props
+      attrs
+      slots
+      emit
+    In other words, you will not have access to the following component options:
+      data
+      computed
+      methods
+   */
+  setup(props, context) {
     
     // 接收props
     // const { user, version } = toRefs(props)
     
+    /**
+     * Inside setup(), this won't be a reference to the current active instance
+     * Since setup() is called before other component options are resolved, 
+     * this inside setup() will behave quite differently from this in other options. 
+     * This might cause confusions when using setup() along other Options API.
+     */
+    console.warn('setup this', this)
+    console.warn('setup context', context) // {attrs, slots, emit}
+
+
     const version = ref('1.27')
     const user = ref('tj-sky')
 
