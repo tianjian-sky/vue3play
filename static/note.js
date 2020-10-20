@@ -1987,11 +1987,6 @@ function normalizePropsOptions(comp, appContext, asMixin = false) {
     return (cache[appId] = [normalized, needCastKeys]);
 }
 
-
-
-
-
-
 const initSlots = (instance, children) => {
     if (instance.vnode.shapeFlag & 32 /* SLOTS_CHILDREN */) {
         const type = children._;
@@ -2070,3 +2065,56 @@ function setupStatefulComponent(instance, isSSR) {
         finishComponentSetup(instance);
     }
 }
+
+/**
+ * 初始化slot
+ * 
+ */
+
+const initSlots = (instance, children) => {
+    if (instance.vnode.shapeFlag & 32 /* SLOTS_CHILDREN */) {
+        const type = children._;
+        if (type) {
+            instance.slots = children;
+            // make compiler marker non-enumerable
+            def(children, '_', type);
+        }
+        else {
+            normalizeObjectSlots(children, (instance.slots = {}));
+        }
+    }
+    else {
+        instance.slots = {};
+        if (children) {
+            normalizeVNodeSlots(instance, children);
+        }
+    }
+    def(instance.slots, InternalObjectKey, 1);
+};
+const normalizeObjectSlots = (rawSlots, slots) => {
+    const ctx = rawSlots._ctx;
+    for (const key in rawSlots) {
+        if (isInternalKey(key))
+            continue;
+        const value = rawSlots[key];
+        if (isFunction(value)) {
+            slots[key] = normalizeSlot(key, value, ctx);
+        }
+        else if (value != null) {
+            {
+                warn(`Non-function value encountered for slot "${key}". ` +
+                    `Prefer function slots for better performance.`);
+            }
+            const normalized = normalizeSlotValue(value);
+            slots[key] = () => normalized;
+        }
+    }
+};
+const normalizeVNodeSlots = (instance, children) => {
+    if ( !isKeepAlive(instance.vnode)) {
+        warn(`Non-function value encountered for default slot. ` +
+            `Prefer function slots for better performance.`);
+    }
+    const normalized = normalizeSlotValue(children);
+    instance.slots.default = () => normalized;
+};
