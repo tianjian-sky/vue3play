@@ -167,7 +167,18 @@ function getBaseTransformPreset(prefixIdentifiers) {
                     : keyProp
                         ? 128 /* KEYED_FRAGMENT */
                         : 256 /* UNKEYED_FRAGMENT */;
-                forNode.codegenNode = createVNodeCall(context, helper(FRAGMENT), undefined, renderExp, `${fragmentFlag} /* ${PatchFlagNames[fragmentFlag]} */`, undefined, undefined, true /* isBlock */, !isStableFragment /* disableTracking */, node.loc);
+                forNode.codegenNode = createVNodeCall(
+                    context, 
+                    helper(FRAGMENT), 
+                    undefined, 
+                    renderExp, 
+                    `${fragmentFlag} /* ${PatchFlagNames[fragmentFlag]} */`, 
+                    undefined, 
+                    undefined, 
+                    true /* isBlock */, 
+                    !isStableFragment /* disableTracking */, 
+                    node.loc
+                );
                 return () => {
                     // finish the codegen now that all children have been traversed
                     let childBlock;
@@ -226,6 +237,183 @@ function getBaseTransformPreset(prefixIdentifiers) {
                 };
             });
         });
+
+                function createCallExpression(callee, args = [], loc = locStub) {
+                    return {
+                        type: 14 /* JS_CALL_EXPRESSION */,
+                        loc,
+                        callee,
+                        arguments: args
+                    };
+                }
+                function createObjectProperty(key, value) {
+                    return {
+                        type: 16 /* JS_PROPERTY */,
+                        loc: locStub,
+                        key: isString(key) ? createSimpleExpression(key, true) : key,
+                        value
+                    };
+                }
+                function createSimpleExpression(content, isStatic, loc = locStub, isConstant = false) {
+                    return {
+                        type: 4 /* SIMPLE_EXPRESSION */,
+                        loc,
+                        isConstant,
+                        content,
+                        isStatic
+                    };
+                }
+                function createFunctionExpression(params, returns = undefined, newline = false, isSlot = false, loc = locStub) {
+                    return {
+                        type: 18 /* JS_FUNCTION_EXPRESSION */,
+                        params,
+                        returns,
+                        newline,
+                        isSlot,
+                        loc
+                    };
+                }
+                function createForLoopParams({ value, key, index }) {
+                    const params = [];
+                    if (value) {
+                        params.push(value);
+                    }
+                    if (key) {
+                        if (!value) {
+                            params.push(createSimpleExpression(`_`, false));
+                        }
+                        params.push(key);
+                    }
+                    if (index) {
+                        if (!key) {
+                            if (!value) {
+                                params.push(createSimpleExpression(`_`, false));
+                            }
+                            params.push(createSimpleExpression(`__`, false));
+                        }
+                        params.push(index);
+                    }
+                    return params;
+                }
+                function createVNodeCall(context, tag, props, children, patchFlag, dynamicProps, directives, isBlock = false, disableTracking = false, loc = locStub) {
+                    if (context) {
+                        if (isBlock) {
+                            context.helper(OPEN_BLOCK);
+                            context.helper(CREATE_BLOCK);
+                        }
+                        else {
+                            context.helper(CREATE_VNODE);
+                        }
+                        if (directives) {
+                            context.helper(WITH_DIRECTIVES);
+                        }
+                    }
+                    return {
+                        type: 13 /* VNODE_CALL */,
+                        tag,
+                        props,
+                        children,
+                        patchFlag,
+                        dynamicProps,
+                        directives,
+                        isBlock,
+                        disableTracking,
+                        loc
+                    };
+                }
+                // AST Utilities ---------------------------------------------------------------
+                // Some expressions, e.g. sequence and conditional expressions, are never
+                // associated with template nodes, so their source locations are just a stub.
+                // Container types like CompoundExpression also don't need a real location.
+                const locStub = {
+                    source: '',
+                    start: { line: 1, column: 1, offset: 0 },
+                    end: { line: 1, column: 1, offset: 0 }
+                };
+                
+                // Patch flags are optimization hints generated by the compiler.
+                // when a block with dynamicChildren is encountered during diff, the algorithm
+                // enters "optimized mode". In this mode, we know that the vdom is produced by
+                // a render function generated by the compiler, so the algorithm only needs to
+                // handle updates explicitly marked by these patch flags.
+                // dev only flag -> name mapping
+                const PatchFlagNames = {
+                    [1 /* TEXT */]: `TEXT`,
+                    [2 /* CLASS */]: `CLASS`,
+                    [4 /* STYLE */]: `STYLE`,
+                    [8 /* PROPS */]: `PROPS`,
+                    [16 /* FULL_PROPS */]: `FULL_PROPS`,
+                    [32 /* HYDRATE_EVENTS */]: `HYDRATE_EVENTS`,
+                    [64 /* STABLE_FRAGMENT */]: `STABLE_FRAGMENT`,
+                    [128 /* KEYED_FRAGMENT */]: `KEYED_FRAGMENT`,
+                    [256 /* UNKEYED_FRAGMENT */]: `UNKEYED_FRAGMENT`,
+                    [1024 /* DYNAMIC_SLOTS */]: `DYNAMIC_SLOTS`,
+                    [512 /* NEED_PATCH */]: `NEED_PATCH`,
+                    [-1 /* HOISTED */]: `HOISTED`,
+                    [-2 /* BAIL */]: `BAIL`
+                };
+
+            function createObjectProperty(key, value) {
+                return {
+                    type: 16 /* JS_PROPERTY */,
+                    loc: locStub,
+                    key: isString(key) ? createSimpleExpression(key, true) : key,
+                    value
+                };
+            }
+        
+        // target-agnostic transform used for both Client and SSR
+        function processFor(node, dir, context, processCodegen) {
+            if (!dir.exp) {
+                context.onError(createCompilerError(30 /* X_V_FOR_NO_EXPRESSION */, dir.loc));
+                return;
+            }
+            const parseResult = parseForExpression(
+            // can only be simple expression because vFor transform is applied
+            // before expression transform.
+            dir.exp, context);
+            if (!parseResult) {
+                context.onError(createCompilerError(31 /* X_V_FOR_MALFORMED_EXPRESSION */, dir.loc));
+                return;
+            }
+            const { addIdentifiers, removeIdentifiers, scopes } = context;
+            const { source, value, key, index } = parseResult;
+            const forNode = {
+                type: 11 /* FOR */,
+                loc: dir.loc,
+                source,
+                valueAlias: value,
+                keyAlias: key,
+                objectIndexAlias: index,
+                parseResult,
+                children: isTemplateNode(node) ? node.children : [node]
+            };
+            context.replaceNode(forNode);
+            // bookkeeping
+            scopes.vFor++;
+            const onExit = processCodegen && processCodegen(forNode);
+            return () => {
+                scopes.vFor--;
+                if (onExit)
+                    onExit();
+            };
+        }
+
+        const forNode = {
+            type: 11 /* FOR */,
+            loc: dir.loc,
+            source,
+            valueAlias: value,
+            keyAlias: key,
+            objectIndexAlias: index,
+            parseResult,
+            children: isTemplateNode(node) ? node.children : [node]
+        };
+
+
+
+
+
         const transformExpression = (node, context) => {
             if (node.type === 5 /* INTERPOLATION */) {
                 node.content = processExpression(node.content, context);
