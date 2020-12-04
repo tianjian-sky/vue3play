@@ -347,8 +347,8 @@ function getBaseTransformPreset(prefixIdentifiers) {
                     [64 /* STABLE_FRAGMENT */]: `STABLE_FRAGMENT`,
                     [128 /* KEYED_FRAGMENT */]: `KEYED_FRAGMENT`,
                     [256 /* UNKEYED_FRAGMENT */]: `UNKEYED_FRAGMENT`,
-                    [1024 /* DYNAMIC_SLOTS */]: `DYNAMIC_SLOTS`,
                     [512 /* NEED_PATCH */]: `NEED_PATCH`,
+                    [1024 /* DYNAMIC_SLOTS */]: `DYNAMIC_SLOTS`,
                     [-1 /* HOISTED */]: `HOISTED`,
                     [-2 /* BAIL */]: `BAIL`
                 };
@@ -462,6 +462,372 @@ function getBaseTransformPreset(prefixIdentifiers) {
                 node.codegenNode = createCallExpression(context.helper(RENDER_SLOT), slotArgs, loc);
             }
         };
+            function isSlotOutlet(node) {
+                return node.type === 1 /* ELEMENT */ && node.tagType === 2 /* SLOT */;
+            }
+            function processSlotOutlet(node, context) {
+                let slotName = `"default"`;
+                let slotProps = undefined;
+                // check for <slot name="xxx" OR :name="xxx" />
+                const name = findProp(node, 'name');
+                if (name) {
+                    if (name.type === 6 /* ATTRIBUTE */ && name.value) {
+                        // static name
+                        slotName = JSON.stringify(name.value.content);
+                    }
+                    else if (name.type === 7 /* DIRECTIVE */ && name.exp) {
+                        // dynamic name
+                        slotName = name.exp;
+                    }
+                }
+                const propsWithoutName = name
+                    ? node.props.filter(p => p !== name)
+                    : node.props;
+                if (propsWithoutName.length > 0) {
+                    const { props, directives } = buildProps(node, context, propsWithoutName);
+                    slotProps = props;
+                    if (directives.length) {
+                        context.onError(createCompilerError(35 /* X_V_SLOT_UNEXPECTED_DIRECTIVE_ON_SLOT_OUTLET */, directives[0].loc));
+                    }
+                }
+                return {
+                    slotName,
+                    slotProps
+                };
+            }
+            function buildProps(node, context, props = node.props, ssr = false) {
+                const { tag, loc: elementLoc } = node;
+                const isComponent = node.tagType === 1 /* COMPONENT */;
+                let properties = [];
+                const mergeArgs = [];
+                const runtimeDirectives = [];
+                // patchFlag analysis
+                let patchFlag = 0;
+                let hasRef = false;
+                let hasClassBinding = false;
+                let hasStyleBinding = false;
+                let hasHydrationEventBinding = false;
+                let hasDynamicKeys = false;
+                let hasVnodeHook = false;
+                const dynamicPropNames = [];
+                const analyzePatchFlag = ({ key, value }) => {
+
+
+                    // if (content.startsWith('[')) {
+                    //     isStatic = false;
+                    //     if (!content.endsWith(']')) {
+                    //         emitError(context, 26 /* X_MISSING_DYNAMIC_DIRECTIVE_ARGUMENT_END */);
+                    //     }
+                    //     content = content.substr(1, content.length - 2);
+                    // }
+
+                    if (isStaticExp(key)) {             // const isStaticExp = (p) => p.type === 4 /* SIMPLE_EXPRESSION */ && p.isStatic;
+                        const name = key.content;
+                        const isEventHandler = isOn(name);
+                        if (!isComponent &&
+                            isEventHandler &&
+                            // omit the flag for click handlers because hydration gives click
+                            // dedicated fast path.
+                            name.toLowerCase() !== 'onclick' &&
+                            // omit v-model handlers
+                            name !== 'onUpdate:modelValue' &&
+                            // omit onVnodeXXX hooks
+                            !isReservedProp(name)) {
+                            hasHydrationEventBinding = true;
+                        }
+                        if (isEventHandler && isReservedProp(name)) {
+                            hasVnodeHook = true;
+                        }
+                        if (value.type === 20 /* JS_CACHE_EXPRESSION */ ||
+                            ((value.type === 4 /* SIMPLE_EXPRESSION */ ||
+                                value.type === 8 /* COMPOUND_EXPRESSION */) &&
+                                getStaticType(value) > 0)) {
+                            // skip if the prop is a cached handler or has constant value
+                            return;
+                        }
+                        if (name === 'ref') {
+                            hasRef = true;
+                        }
+                        else if (name === 'class' && !isComponent) {
+                            hasClassBinding = true;
+                        }
+                        else if (name === 'style' && !isComponent) {
+                            hasStyleBinding = true;
+                        }
+                        else if (name !== 'key' && !dynamicPropNames.includes(name)) {
+                            dynamicPropNames.push(name);
+                        }
+                    }
+                    else {
+                        hasDynamicKeys = true;
+                    }
+                };
+                for (let i = 0; i < props.length; i++) {
+                    // static attribute
+                    const prop = props[i];
+                    if (prop.type === 6 /* ATTRIBUTE */) {
+                        const { loc, name, value } = prop;
+                        if (name === 'ref') {
+                            hasRef = true;
+                        }
+                        // skip :is on <component>
+                        if (name === 'is' && tag === 'component') {
+                            continue;
+                        }
+                        properties.push(createObjectProperty(
+                                createSimpleExpression(name, true, getInnerRange(loc, 0, name.length)), 
+                                createSimpleExpression(value ? value.content : '', true, value ? value.loc : loc)
+                            )
+                        );
+                    }
+                    else {
+                        // directives
+                        const { name, arg, exp, loc } = prop;
+                        const isBind = name === 'bind';
+                        const isOn = name === 'on';
+                        // skip v-slot - it is handled by its dedicated transform.
+                        if (name === 'slot') {
+                            if (!isComponent) {
+                                context.onError(createCompilerError(39 /* X_V_SLOT_MISPLACED */, loc));
+                            }
+                            continue;
+                        }
+                        // skip v-once - it is handled by its dedicated transform.
+                        if (name === 'once') {
+                            continue;
+                        }
+                        // skip v-is and :is on <component>
+                        if (name === 'is' ||
+                            (isBind && tag === 'component' && isBindKey(arg, 'is'))) { // 参考parseAttribute
+                            continue;
+                        }
+                        // skip v-on in SSR compilation
+                        if (isOn && ssr) {
+                            continue;
+                        }
+                        // special case for v-bind and v-on with no argument
+                        if (!arg && (isBind || isOn)) {  // 参考parseAttribute
+                            hasDynamicKeys = true;
+                            if (exp) {
+                                if (properties.length) {
+                                    mergeArgs.push(createObjectExpression(dedupeProperties(properties), elementLoc));
+                                    properties = [];
+                                }
+                                if (isBind) {
+                                    mergeArgs.push(exp);
+                                }
+                                else {
+                                    // v-on="obj" -> toHandlers(obj)
+                                    mergeArgs.push({
+                                        type: 14 /* JS_CALL_EXPRESSION */,
+                                        loc,
+                                        callee: context.helper(TO_HANDLERS),
+                                        arguments: [exp]
+                                    });
+                                }
+                            }
+                            else {
+                                context.onError(createCompilerError(isBind
+                                    ? 33 /* X_V_BIND_NO_EXPRESSION */
+                                    : 34 /* X_V_ON_NO_EXPRESSION */, loc));
+                            }
+                            continue;
+                        }
+                        const directiveTransform = context.directiveTransforms[name]; // on, bind. model
+                        if (directiveTransform) {
+                            // has built-in directive transform.
+                            const { props, needRuntime } = directiveTransform(prop, node, context);
+                            !ssr && props.forEach(analyzePatchFlag);
+                            properties.push(...props);
+                            if (needRuntime) {
+                                runtimeDirectives.push(prop);
+                                if (isSymbol(needRuntime)) {
+                                    directiveImportMap.set(prop, needRuntime);
+                                }
+                            }
+                        }
+                        else {
+                            // no built-in transform, this is a user custom directive.
+                            runtimeDirectives.push(prop);
+                        }
+                    }
+                }
+                let propsExpression = undefined;
+                // has v-bind="object" or v-on="object", wrap with mergeProps
+                if (mergeArgs.length) {
+                    if (properties.length) {
+                        mergeArgs.push(createObjectExpression(dedupeProperties(properties), elementLoc));
+                    }
+                    if (mergeArgs.length > 1) {
+                        propsExpression = createCallExpression(context.helper(MERGE_PROPS), mergeArgs, elementLoc);
+                    }
+                    else {
+                        // single v-bind with nothing else - no need for a mergeProps call
+                        propsExpression = mergeArgs[0];
+                    }
+                }
+                else if (properties.length) {
+                    propsExpression = createObjectExpression(dedupeProperties(properties), elementLoc);
+                }
+                // patchFlag analysis
+                if (hasDynamicKeys) {
+                    patchFlag |= 16 /* FULL_PROPS */;
+                }
+                else {
+                    if (hasClassBinding) {
+                        patchFlag |= 2 /* CLASS */;
+                    }
+                    if (hasStyleBinding) {
+                        patchFlag |= 4 /* STYLE */;
+                    }
+                    if (dynamicPropNames.length) {
+                        patchFlag |= 8 /* PROPS */;
+                    }
+                    if (hasHydrationEventBinding) {
+                        patchFlag |= 32 /* HYDRATE_EVENTS */;
+                    }
+                }
+                if ((patchFlag === 0 || patchFlag === 32 /* HYDRATE_EVENTS */) &&
+                    (hasRef || hasVnodeHook || runtimeDirectives.length > 0)) {
+                    patchFlag |= 512 /* NEED_PATCH */;
+                }
+                return {
+                    props: propsExpression,
+                    directives: runtimeDirectives,
+                    patchFlag,
+                    dynamicPropNames
+                };
+            }
+                    // Dedupe props in an object literal.
+                    // Literal duplicated attributes would have been warned during the parse phase,
+                    // however, it's possible to encounter duplicated `onXXX` handlers with different
+                    // modifiers. We also need to merge static and dynamic class / style attributes.
+                    // - onXXX handlers / style: merge into array
+                    // - class: merge into single expression with concatenation
+                    function dedupeProperties(properties) {
+                        const knownProps = new Map();
+                        const deduped = [];
+                        for (let i = 0; i < properties.length; i++) {
+                            const prop = properties[i];
+                            // dynamic keys are always allowed
+                            if (prop.key.type === 8 /* COMPOUND_EXPRESSION */ || !prop.key.isStatic) { // onXXX
+                                deduped.push(prop);
+                                continue;
+                            }
+                            const name = prop.key.content;
+                            const existing = knownProps.get(name);
+                            if (existing) {
+                                if (name === 'style' || name === 'class' || name.startsWith('on')) {
+                                    mergeAsArray(existing, prop);
+                                }
+                                // unexpected duplicate, should have emitted error during parse
+                            }
+                            else {
+                                knownProps.set(name, prop);
+                                deduped.push(prop);
+                            }
+                        }
+                        return deduped;
+                    }
+                    function createArrayExpression(elements, loc = locStub) {
+                        return {
+                            type: 17 /* JS_ARRAY_EXPRESSION */,
+                            loc,
+                            elements
+                        };
+                    }
+
+                    function getStaticType(node, resultCache = new Map()) {
+                        switch (node.type) {
+                            case 1 /* ELEMENT */:
+                                if (node.tagType !== 0 /* ELEMENT */) {
+                                    return 0 /* NOT_STATIC */;
+                                }
+                                const cached = resultCache.get(node);
+                                if (cached !== undefined) {
+                                    return cached;
+                                }
+                                const codegenNode = node.codegenNode;
+                                if (codegenNode.type !== 13 /* VNODE_CALL */) {
+                                    return 0 /* NOT_STATIC */;
+                                }
+                                const flag = getPatchFlag(codegenNode);
+                                if (!flag && !hasNonHoistableProps(node)) {
+                                    // element self is static. check its children.
+                                    let returnType = 1 /* FULL_STATIC */;
+                                    for (let i = 0; i < node.children.length; i++) {
+                                        const childType = getStaticType(node.children[i], resultCache);
+                                        if (childType === 0 /* NOT_STATIC */) {
+                                            resultCache.set(node, 0 /* NOT_STATIC */);
+                                            return 0 /* NOT_STATIC */;
+                                        }
+                                        else if (childType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                                            returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                                        }
+                                    }
+                                    // check if any of the props contain runtime constants
+                                    if (returnType !== 2 /* HAS_RUNTIME_CONSTANT */) {
+                                        for (let i = 0; i < node.props.length; i++) {
+                                            const p = node.props[i];
+                                            if (p.type === 7 /* DIRECTIVE */ &&
+                                                p.name === 'bind' &&
+                                                p.exp &&
+                                                (p.exp.type === 8 /* COMPOUND_EXPRESSION */ ||
+                                                    p.exp.isRuntimeConstant)) {
+                                                returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                                            }
+                                        }
+                                    }
+                                    // only svg/foreignObject could be block here, however if they are
+                                    // stati then they don't need to be blocks since there will be no
+                                    // nested updates.
+                                    if (codegenNode.isBlock) {
+                                        codegenNode.isBlock = false;
+                                    }
+                                    resultCache.set(node, returnType);
+                                    return returnType;
+                                }
+                                else {
+                                    resultCache.set(node, 0 /* NOT_STATIC */);
+                                    return 0 /* NOT_STATIC */;
+                                }
+                            case 2 /* TEXT */:
+                            case 3 /* COMMENT */:
+                                return 1 /* FULL_STATIC */;
+                            case 9 /* IF */:
+                            case 11 /* FOR */:
+                            case 10 /* IF_BRANCH */:
+                                return 0 /* NOT_STATIC */;
+                            case 5 /* INTERPOLATION */:
+                            case 12 /* TEXT_CALL */:
+                                return getStaticType(node.content, resultCache);
+                            case 4 /* SIMPLE_EXPRESSION */:
+                                return node.isConstant
+                                    ? node.isRuntimeConstant
+                                        ? 2 /* HAS_RUNTIME_CONSTANT */
+                                        : 1 /* FULL_STATIC */
+                                    : 0 /* NOT_STATIC */;
+                            case 8 /* COMPOUND_EXPRESSION */:
+                                let returnType = 1 /* FULL_STATIC */;
+                                for (let i = 0; i < node.children.length; i++) {
+                                    const child = node.children[i];
+                                    if (isString(child) || isSymbol(child)) {
+                                        continue;
+                                    }
+                                    const childType = getStaticType(child, resultCache);
+                                    if (childType === 0 /* NOT_STATIC */) {
+                                        return 0 /* NOT_STATIC */;
+                                    }
+                                    else if (childType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                                        returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                                    }
+                                }
+                                return returnType;
+                            default:
+                                return 0 /* NOT_STATIC */;
+                        }
+                    }
+
         const transformElement = (node, context) => {
             if (!(node.type === 1 /* ELEMENT */ &&
                 (node.tagType === 0 /* ELEMENT */ ||
@@ -587,9 +953,381 @@ function getBaseTransformPreset(prefixIdentifiers) {
                         vnodeDynamicProps = stringifyDynamicPropNames(dynamicPropNames);
                     }
                 }
+                // function createVNodeCall(context, tag, props, children, patchFlag, dynamicProps, directives, isBlock = false, disableTracking = false, loc = locStub) 
                 node.codegenNode = createVNodeCall(context, vnodeTag, vnodeProps, vnodeChildren, vnodePatchFlag, vnodeDynamicProps, vnodeDirectives, !!shouldUseBlock, false /* disableTracking */, node.loc);
             };
         };
+
+        function stringifyDynamicPropNames(props) {
+            let propsNamesString = `[`;
+            for (let i = 0, l = props.length; i < l; i++) {
+                propsNamesString += JSON.stringify(props[i]);
+                if (i < l - 1)
+                    propsNamesString += ', ';
+            }
+            return propsNamesString + `]`;
+        }
+
+        /**
+         * Even for a node with no patch flag, it is possible for it to contain
+         * non-hoistable expressions that refers to scope variables, e.g. compiler
+         * injected keys or cached event handlers. Therefore we need to always check the
+         * codegenNode's props to be sure.
+         */
+        function hasNonHoistableProps(node) {
+            const props = getNodeProps(node);
+            if (props && props.type === 15 /* JS_OBJECT_EXPRESSION */) {
+                const { properties } = props;
+                for (let i = 0; i < properties.length; i++) {
+                    const { key, value } = properties[i];
+                    if (key.type !== 4 /* SIMPLE_EXPRESSION */ ||
+                        !key.isStatic ||
+                        (value.type !== 4 /* SIMPLE_EXPRESSION */ ||
+                            (!value.isStatic && !value.isConstant))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+
+        /**
+         * 
+         * node.type:0 ROOT 1 ELEMENT 2 TEXT 3 COMMENT 4 SIMPLE_EXPRESSION  5 INTERPOLATION 8 COMPOUND_EXPRESSION 9 IF 10 IF_BRANCH IF 11 FOR 12 TEXT_CALL
+         * 
+         * static type 0 NOT_STATIC 1 FULL_STATIC  2 HAS_RUNTIME_CONSTANT
+         * tagtype: 0 element 1 template 2 slot
+         * 
+         * codegennode.patchFlag -2 BAIL -1 HOISTED 1 TEXT 2 CLASS 4 STYLE 8 PROPS 16 FULL_PROPS 32 HYDRATE_EVENTS 64 STABLE_FRAGMENT 128 KEYED_FRAGMENT 256 UNKEYED_FRAGMENT 512 NEED_PATCH 1024 DYNAMIC_SLOTS
+         * 
+         */
+
+        function getStaticType(node, resultCache = new Map()) { // 0 NOT_STATIC 1 FULL_STATIC  2 HAS_RUNTIME_CONSTANT
+            switch (node.type) {
+                case 1 /* ELEMENT */:
+                    if (node.tagType !== 0 /* ELEMENT */) {
+                        return 0 /* NOT_STATIC */;
+                    }
+                    const cached = resultCache.get(node);
+                    if (cached !== undefined) {
+                        return cached;
+                    }
+                    const codegenNode = node.codegenNode;
+                    if (codegenNode.type !== 13 /* VNODE_CALL */) {
+                        return 0 /* NOT_STATIC */;
+                    }
+                    const flag = getPatchFlag(codegenNode);
+                    if (!flag && !hasNonHoistableProps(node)) {
+                        // element self is static. check its children.
+                        let returnType = 1 /* FULL_STATIC */;
+                        for (let i = 0; i < node.children.length; i++) {
+                            const childType = getStaticType(node.children[i], resultCache);
+                            if (childType === 0 /* NOT_STATIC */) {
+                                resultCache.set(node, 0 /* NOT_STATIC */);
+                                return 0 /* NOT_STATIC */;
+                            }
+                            else if (childType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                                returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                            }
+                        }
+                        // check if any of the props contain runtime constants
+                        if (returnType !== 2 /* HAS_RUNTIME_CONSTANT */) {
+                            for (let i = 0; i < node.props.length; i++) {
+                                const p = node.props[i];
+                                if (p.type === 7 /* DIRECTIVE */ &&
+                                    p.name === 'bind' &&
+                                    p.exp &&
+                                    (p.exp.type === 8 /* COMPOUND_EXPRESSION */ ||
+                                        p.exp.isRuntimeConstant)) {
+                                    returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                                }
+                            }
+                        }
+                        // only svg/foreignObject could be block here, however if they are
+                        // stati then they don't need to be blocks since there will be no
+                        // nested updates.
+                        if (codegenNode.isBlock) {
+                            codegenNode.isBlock = false;
+                        }
+                        resultCache.set(node, returnType);
+                        return returnType;
+                    }
+                    else {
+                        resultCache.set(node, 0 /* NOT_STATIC */);
+                        return 0 /* NOT_STATIC */;
+                    }
+                case 2 /* TEXT */:
+                case 3 /* COMMENT */:
+                    return 1 /* FULL_STATIC */;
+                case 9 /* IF */:
+                case 11 /* FOR */:
+                case 10 /* IF_BRANCH */:
+                    return 0 /* NOT_STATIC */;
+                case 5 /* INTERPOLATION */:
+                case 12 /* TEXT_CALL */:
+                    return getStaticType(node.content, resultCache);
+                case 4 /* SIMPLE_EXPRESSION */:
+                    return node.isConstant
+                        ? node.isRuntimeConstant
+                            ? 2 /* HAS_RUNTIME_CONSTANT */
+                            : 1 /* FULL_STATIC */
+                        : 0 /* NOT_STATIC */;
+                case 8 /* COMPOUND_EXPRESSION */:
+                    let returnType = 1 /* FULL_STATIC */;
+                    for (let i = 0; i < node.children.length; i++) {
+                        const child = node.children[i];
+                        if (isString(child) || isSymbol(child)) {
+                            continue;
+                        }
+                        const childType = getStaticType(child, resultCache);
+                        if (childType === 0 /* NOT_STATIC */) {
+                            return 0 /* NOT_STATIC */;
+                        }
+                        else if (childType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                            returnType = 2 /* HAS_RUNTIME_CONSTANT */;
+                        }
+                    }
+                    return returnType;
+                default:
+                    return 0 /* NOT_STATIC */;
+            }
+        }
+            /**
+             * context.scopes
+             * scopes: {
+                    vFor: 0,
+                    vSlot: 0,
+                    vPre: 0,
+                    vOnce: 0
+                },
+             */
+                function isCoreComponent(tag) {
+                    if (isBuiltInType(tag, 'Teleport')) {
+                        return TELEPORT;
+                    }
+                    else if (isBuiltInType(tag, 'Suspense')) {
+                        return SUSPENSE;
+                    }
+                    else if (isBuiltInType(tag, 'KeepAlive')) {
+                        return KEEP_ALIVE;
+                    }
+                    else if (isBuiltInType(tag, 'BaseTransition')) {
+                        return BASE_TRANSITION;
+                    }
+                }
+
+
+                const buildClientSlotFn = (props, children, loc) => {
+                    createFunctionExpression(props, children, false /* newline */, true /* isSlot */, children.length ? children[0].loc : loc);
+                }
+                function createFunctionExpression(params, returns = undefined, newline = false, isSlot = false, loc = locStub) {
+                    return {
+                        type: 18 /* JS_FUNCTION_EXPRESSION */,
+                        params,
+                        returns,
+                        newline,
+                        isSlot,
+                        loc
+                    };
+                }
+
+                function buildDynamicSlot(name, fn) {
+                    return createObjectExpression([
+                        createObjectProperty(`name`, name),
+                        createObjectProperty(`fn`, fn)
+                    ]);
+                }
+
+                function createConditionalExpression(test, consequent, alternate, newline = true) {
+                    return {
+                        type: 19 /* JS_CONDITIONAL_EXPRESSION */,
+                        test,
+                        consequent,
+                        alternate,
+                        newline,
+                        loc: locStub
+                    };
+                }
+                function createForLoopParams({ value, key, index }) {
+                    const params = [];
+                    if (value) {
+                        params.push(value);
+                    }
+                    if (key) {
+                        if (!value) {
+                            params.push(createSimpleExpression(`_`, false));
+                        }
+                        params.push(key);
+                    }
+                    if (index) {
+                        if (!key) {
+                            if (!value) {
+                                params.push(createSimpleExpression(`_`, false));
+                            }
+                            params.push(createSimpleExpression(`__`, false));
+                        }
+                        params.push(index);
+                    }
+                    return params;
+                }
+                // Instead of being a DirectiveTransform, v-slot processing is called during
+                // transformElement to build the slots object for a component.
+                function buildSlots(node, context, buildSlotFn = buildClientSlotFn) {
+                    context.helper(WITH_CTX);
+                    const { children, loc } = node;
+                    const slotsProperties = [];
+                    const dynamicSlots = [];
+                    const buildDefaultSlotProperty = (props, children) => createObjectProperty(`default`, buildSlotFn(props, children, loc));
+                    // If the slot is inside a v-for or another v-slot, force it to be dynamic
+                    // since it likely uses a scope variable.
+                    
+                    let hasDynamicSlots = context.scopes.vSlot > 0 || context.scopes.vFor > 0;
+                    // 1. Check for slot with slotProps on component itself.
+                    //    <Comp v-slot="{ prop }"/>
+                    const onComponentSlot = findDir(node, 'slot', true);
+                    if (onComponentSlot) {
+                        const { arg, exp } = onComponentSlot;
+                        if (arg && !isStaticExp(arg)) {
+                            hasDynamicSlots = true;
+                        }
+                        slotsProperties.push(createObjectProperty(arg || createSimpleExpression('default', true), buildSlotFn(exp, children, loc)));
+                    }
+                    // 2. Iterate through children and check for template slots
+                    //    <template v-slot:foo="{ prop }">
+                    let hasTemplateSlots = false;
+                    let hasNamedDefaultSlot = false;
+                    const implicitDefaultChildren = [];
+                    const seenSlotNames = new Set();
+                    for (let i = 0; i < children.length; i++) {
+                        const slotElement = children[i];
+                        let slotDir;
+                        if (!isTemplateNode(slotElement) ||
+                            !(slotDir = findDir(slotElement, 'slot', true))) {
+                            // not a <template v-slot>, skip.
+                            if (slotElement.type !== 3 /* COMMENT */) {
+                                implicitDefaultChildren.push(slotElement);
+                            }
+                            continue;
+                        }
+                        if (onComponentSlot) {
+                            // already has on-component slot - this is incorrect usage.
+                            context.onError(createCompilerError(36 /* X_V_SLOT_MIXED_SLOT_USAGE */, slotDir.loc));
+                            break;
+                        }
+                        hasTemplateSlots = true;
+                        const { children: slotChildren, loc: slotLoc } = slotElement;
+                        const { arg: slotName = createSimpleExpression(`default`, true), exp: slotProps, loc: dirLoc } = slotDir;
+                        // check if name is dynamic.
+                        let staticSlotName;
+                        if (isStaticExp(slotName)) {
+                            staticSlotName = slotName ? slotName.content : `default`;
+                        }
+                        else {
+                            hasDynamicSlots = true;
+                        }
+                        const slotFunction = buildSlotFn(slotProps, slotChildren, slotLoc);
+                        // check if this slot is conditional (v-if/v-for)
+                        let vIf;
+                        let vElse;
+                        let vFor;
+                        if ((vIf = findDir(slotElement, 'if'))) {
+                            hasDynamicSlots = true;
+                            dynamicSlots.push(createConditionalExpression(vIf.exp, buildDynamicSlot(slotName, slotFunction), defaultFallback));
+                        }
+                        else if ((vElse = findDir(slotElement, /^else(-if)?$/, true /* allowEmpty */))) {
+                            // find adjacent v-if
+                            let j = i;
+                            let prev;
+                            while (j--) {
+                                prev = children[j];
+                                if (prev.type !== 3 /* COMMENT */) {
+                                    break;
+                                }
+                            }
+                            if (prev && isTemplateNode(prev) && findDir(prev, 'if')) {
+                                // remove node
+                                children.splice(i, 1);
+                                i--;
+                                // attach this slot to previous conditional
+                                let conditional = dynamicSlots[dynamicSlots.length - 1];
+                                while (conditional.alternate.type === 19 /* JS_CONDITIONAL_EXPRESSION */) {
+                                    conditional = conditional.alternate;
+                                }
+                                conditional.alternate = vElse.exp
+                                    ? createConditionalExpression(vElse.exp, buildDynamicSlot(slotName, slotFunction), defaultFallback)
+                                    : buildDynamicSlot(slotName, slotFunction);
+                            }
+                            else {
+                                context.onError(createCompilerError(29 /* X_V_ELSE_NO_ADJACENT_IF */, vElse.loc));
+                            }
+                        }
+                        else if ((vFor = findDir(slotElement, 'for'))) {
+                            hasDynamicSlots = true;
+                            const parseResult = vFor.parseResult ||
+                                parseForExpression(vFor.exp, context);
+                            if (parseResult) {
+                                // Render the dynamic slots as an array and add it to the createSlot()
+                                // args. The runtime knows how to handle it appropriately.
+                                dynamicSlots.push(createCallExpression(context.helper(RENDER_LIST), [
+                                    parseResult.source,
+                                    createFunctionExpression(createForLoopParams(parseResult), buildDynamicSlot(slotName, slotFunction), true /* force newline */)
+                                ]));
+                            }
+                            else {
+                                context.onError(createCompilerError(31 /* X_V_FOR_MALFORMED_EXPRESSION */, vFor.loc));
+                            }
+                        }
+                        else {
+                            // check duplicate static names
+                            if (staticSlotName) {
+                                if (seenSlotNames.has(staticSlotName)) {
+                                    context.onError(createCompilerError(37 /* X_V_SLOT_DUPLICATE_SLOT_NAMES */, dirLoc));
+                                    continue;
+                                }
+                                seenSlotNames.add(staticSlotName);
+                                if (staticSlotName === 'default') {
+                                    hasNamedDefaultSlot = true;
+                                }
+                            }
+                            slotsProperties.push(createObjectProperty(slotName, slotFunction));
+                        }
+                    }
+                    if (!onComponentSlot) {
+                        if (!hasTemplateSlots) {
+                            // implicit default slot (on component)
+                            slotsProperties.push(buildDefaultSlotProperty(undefined, children));
+                        }
+                        else if (implicitDefaultChildren.length) {
+                            // implicit default slot (mixed with named slots)
+                            if (hasNamedDefaultSlot) {
+                                context.onError(createCompilerError(38 /* X_V_SLOT_EXTRANEOUS_DEFAULT_SLOT_CHILDREN */, implicitDefaultChildren[0].loc));
+                            }
+                            else {
+                                slotsProperties.push(buildDefaultSlotProperty(undefined, implicitDefaultChildren));
+                            }
+                        }
+                    }
+                    const slotFlag = hasDynamicSlots
+                        ? 2 /* DYNAMIC */
+                        : hasForwardedSlots(node.children)
+                            ? 3 /* FORWARDED */
+                            : 1 /* STABLE */;
+                    let slots = createObjectExpression(slotsProperties.concat(createObjectProperty(`_`, 
+                    // 2 = compiled but dynamic = can skip normalization, but must run diff
+                    // 1 = compiled and static = can skip normalization AND diff as optimized
+                    createSimpleExpression('' + slotFlag, false))), loc);
+                    if (dynamicSlots.length) {
+                        slots = createCallExpression(context.helper(CREATE_SLOTS), [
+                            slots,
+                            createArrayExpression(dynamicSlots)
+                        ]);
+                    }
+                    return {
+                        slots,
+                        hasDynamicSlots
+                    };
+                }
         const trackSlotScopes = (node, context) => {
             if (node.type === 1 /* ELEMENT */ &&
                 (node.tagType === 1 /* COMPONENT */ ||
@@ -1016,4 +1754,134 @@ function transform(root, options) {
             while (i--) {
                 exitFns[i]();
             }
+        }
+
+        function hoistStatic(root, context) {
+            walk(root, context, new Map(), 
+            // Root node is unfortunately non-hoistable due to potential parent
+            // fallthrough attributes.
+            isSingleElementRoot(root, root.children[0]));
+        }
+        /**
+         * context.hoists: []
+         */
+        function hoist(exp) {
+            context.hoists.push(exp);
+            const identifier = createSimpleExpression(`_hoisted_${context.hoists.length}`, false, exp.loc, true);
+            identifier.hoisted = exp;
+            return identifier;
+        }
+        function isSingleElementRoot(root, child) {
+            const { children } = root;
+            return (children.length === 1 &&
+                child.type === 1 /* ELEMENT */ &&
+                !isSlotOutlet(child));
+        }
+        function walk(node, context, resultCache, doNotHoistNode = false) {
+            let hasHoistedNode = false;
+            // Some transforms, e.g. transformAssetUrls from @vue/compiler-sfc, replaces
+            // static bindings with expressions. These expressions are guaranteed to be
+            // constant so they are still eligible for hoisting, but they are only
+            // available at runtime and therefore cannot be evaluated ahead of time.
+            // This is only a concern for pre-stringification (via transformHoist by
+            // @vue/compiler-dom), but doing it here allows us to perform only one full
+            // walk of the AST and allow `stringifyStatic` to stop walking as soon as its
+            // stringficiation threshold is met.
+            let hasRuntimeConstant = false;
+            const { children } = node;
+            for (let i = 0; i < children.length; i++) {
+                const child = children[i];
+                // only plain elements & text calls are eligible for hoisting.
+                if (child.type === 1 /* ELEMENT */ &&
+                    child.tagType === 0 /* ELEMENT */) {
+                    let staticType;
+                    if (!doNotHoistNode &&
+                        (staticType = getStaticType(child, resultCache)) > 0) {
+                        if (staticType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                            hasRuntimeConstant = true;
+                        }
+                        child.codegenNode.patchFlag =
+                            -1 /* HOISTED */ + ( ` /* HOISTED */` );
+                        child.codegenNode = context.hoist(child.codegenNode);
+                        hasHoistedNode = true;
+                        continue;
+                    }
+                    else {
+                        // node may contain dynamic children, but its props may be eligible for
+                        // hoisting.
+                        const codegenNode = child.codegenNode;
+                        if (codegenNode.type === 13 /* VNODE_CALL */) {
+                            const flag = getPatchFlag(codegenNode);
+                            if ((!flag ||
+                                flag === 512 /* NEED_PATCH */ ||
+                                flag === 1 /* TEXT */) &&
+                                !hasNonHoistableProps(child)) {
+                                const props = getNodeProps(child);
+                                if (props) {
+                                    codegenNode.props = context.hoist(props);
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (child.type === 12 /* TEXT_CALL */) {
+                    const staticType = getStaticType(child.content, resultCache);
+                    if (staticType > 0) {
+                        if (staticType === 2 /* HAS_RUNTIME_CONSTANT */) {
+                            hasRuntimeConstant = true;
+                        }
+                        child.codegenNode = context.hoist(child.codegenNode);
+                        hasHoistedNode = true;
+                    }
+                }
+                // walk further
+                if (child.type === 1 /* ELEMENT */) {
+                    walk(child, context, resultCache);
+                }
+                else if (child.type === 11 /* FOR */) {
+                    // Do not hoist v-for single child because it has to be a block
+                    walk(child, context, resultCache, child.children.length === 1);
+                }
+                else if (child.type === 9 /* IF */) {
+                    for (let i = 0; i < child.branches.length; i++) {
+                        // Do not hoist v-if single child because it has to be a block
+                        walk(child.branches[i], context, resultCache, child.branches[i].children.length === 1);
+                    }
+                }
+            }
+            if (!hasRuntimeConstant && hasHoistedNode && context.transformHoist) {
+                context.transformHoist(children, context, node);
+            }
+        }
+
+        function createRootCodegen(root, context) {
+            const { helper } = context;
+            const { children } = root;
+            if (children.length === 1) {
+                const child = children[0];
+                // if the single child is an element, turn it into a block.
+                if (isSingleElementRoot(root, child) && child.codegenNode) {
+                    // single element root is never hoisted so codegenNode will never be
+                    // SimpleExpressionNode
+                    const codegenNode = child.codegenNode;
+                    if (codegenNode.type === 13 /* VNODE_CALL */) {
+                        codegenNode.isBlock = true;
+                        helper(OPEN_BLOCK);
+                        helper(CREATE_BLOCK);
+                    }
+                    root.codegenNode = codegenNode;
+                }
+                else {
+                    // - single <slot/>, IfNode, ForNode: already blocks.
+                    // - single text node: always patched.
+                    // root codegen falls through via genNode()
+                    root.codegenNode = child;
+                }
+            }
+            else if (children.length > 1) {
+                // root has multiple nodes - return a fragment block.
+                // createVNodeCall(context, tag, props, children, patchFlag, dynamicProps, directives, isBlock = false, disableTracking = false, loc = locStub) {
+                root.codegenNode = createVNodeCall(context, helper(FRAGMENT), undefined, root.children, `${64 /* STABLE_FRAGMENT */} /* ${PatchFlagNames[64 /* STABLE_FRAGMENT */]} */`, undefined, undefined, true);
+            }
+            else ;
         }
