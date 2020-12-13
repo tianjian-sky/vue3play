@@ -3,6 +3,7 @@
     <img alt="Vue logo" src="../assets/logo.png">
     <Banner msg="Welcome to Your Vue.js App"/>
     <Heros msg="To be continued..."/>
+    <button @click="changeProvide">change provide</button>
   </div>
 </template>
 
@@ -11,7 +12,7 @@
 import Banner from '@/components/Banner'
 import Heros from '@/components/Heros.vue'
 import RacesV2 from '@/components/RacesV2.vue'
-import {ref,/*  toRefs, watch, computed, */ onBeforeMount, onMounted} from 'vue'
+import {ref, reactive, provide,/*  toRefs, watch, computed, */ onBeforeMount, onMounted} from 'vue'
 
 export default {
   name: 'Home',
@@ -48,12 +49,23 @@ export default {
     const version = ref('1.27')
     const user = ref('tj-sky')
 
+    const location = ref('North Pole')
+    const geolocation = reactive({
+      longitude: 90,
+      latitude: 135
+    })
+
     const { getRaces, races, computedRaces } = RacesV2(version, user)
   
     console.warn('setup props', props)
     console.warn('races from setup:', races)
     console.warn('races value from setup:', races.value)
     console.warn('computedRaces from setup:', computedRaces)
+
+    provide('location', location)
+    provide('geolocation', geolocation)
+
+
     onBeforeMount(() => {
       console.warn('home on befure mount from setup')
     })
@@ -64,6 +76,20 @@ export default {
     setTimeout(() => {
       console.warn('races from setup 1000ms later:', races.value)
     }, 1000);
+    return {
+      geolocation,
+      location
+    }
+  },
+  methods: {
+    changeProvide() {
+      console.warn(123123, this, this.location)
+      /**
+       * When a ref is returned as a property on the render context (the object returned from setup()) and accessed in the template,
+       *  it automatically unwraps to the inner value. There is no need to append .value in the template:
+       */
+      this.location = 'South Pole!'
+    }
   },
   created () {
     console.warn('home created')

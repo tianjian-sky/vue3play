@@ -992,6 +992,31 @@ function getBaseTransformPreset(prefixIdentifiers) {
         }
 
 
+
+        const vModelSelect = {
+            created(el, binding, vnode) {
+                addEventListener(el, 'change', () => {
+                    const selectedVal = Array.prototype.filter
+                        .call(el.options, (o) => o.selected)
+                        .map(getValue);
+                    el._assign(el.multiple ? selectedVal : selectedVal[0]);
+                });
+                el._assign = getModelAssigner(vnode);
+            },
+            // set value in mounted & updated because <select> relies on its children
+            // <option>s.
+            mounted(el, { value }) {
+                setSelected(el, value);
+            },
+            beforeUpdate(el, _binding, vnode) {
+                el._assign = getModelAssigner(vnode);
+            },
+            updated(el, { value }) {
+                setSelected(el, value);
+            }
+        };
+
+
         /**
          * 
          * node.type:0 ROOT 1 ELEMENT 2 TEXT 3 COMMENT 4 SIMPLE_EXPRESSION  5 INTERPOLATION 8 COMPOUND_EXPRESSION 9 IF 10 IF_BRANCH IF 11 FOR 12 TEXT_CALL
