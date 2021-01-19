@@ -1047,3 +1047,160 @@ let shouldTrack$1 = 1;
 function setBlockTracking(value) {
     shouldTrack$1 += value;
 }
+
+
+var runtimeDom = /*#__PURE__*/Object.freeze({
+    __proto__: null,
+    render: render,
+    hydrate: hydrate,
+    createApp: createApp,
+    createSSRApp: createSSRApp,
+    useCssModule: useCssModule,
+    useCssVars: useCssVars,
+    Transition: Transition,
+    TransitionGroup: TransitionGroup,
+    vModelText: vModelText,
+    vModelCheckbox: vModelCheckbox,
+    vModelRadio: vModelRadio,
+    vModelSelect: vModelSelect,
+    vModelDynamic: vModelDynamic,
+    withModifiers: withModifiers,
+    withKeys: withKeys,
+    vShow: vShow,
+    reactive: reactive,
+    ref: ref,
+    readonly: readonly,
+    unref: unref,
+    proxyRefs: proxyRefs,
+    isRef: isRef,
+    toRef: toRef,
+    toRefs: toRefs,
+    isProxy: isProxy,
+    isReactive: isReactive,
+    isReadonly: isReadonly,
+    customRef: customRef,
+    triggerRef: triggerRef,
+    shallowRef: shallowRef,
+    shallowReactive: shallowReactive,
+    shallowReadonly: shallowReadonly,
+    markRaw: markRaw,
+    toRaw: toRaw,
+    computed: computed$1,
+    watch: watch,
+    watchEffect: watchEffect,
+    onBeforeMount: onBeforeMount,
+    onMounted: onMounted,
+    onBeforeUpdate: onBeforeUpdate,
+    onUpdated: onUpdated,
+    onBeforeUnmount: onBeforeUnmount,
+    onUnmounted: onUnmounted,
+    onActivated: onActivated,
+    onDeactivated: onDeactivated,
+    onRenderTracked: onRenderTracked,
+    onRenderTriggered: onRenderTriggered,
+    onErrorCaptured: onErrorCaptured,
+    provide: provide,
+    inject: inject,
+    nextTick: nextTick,
+    defineComponent: defineComponent,
+    defineAsyncComponent: defineAsyncComponent,
+    getCurrentInstance: getCurrentInstance,
+    h: h,
+    createVNode: createVNode,
+    cloneVNode: cloneVNode,
+    mergeProps: mergeProps,
+    isVNode: isVNode,
+    Fragment: Fragment,
+    Text: Text,
+    Comment: Comment,
+    Static: Static,
+    Teleport: Teleport,
+    Suspense: Suspense,
+    KeepAlive: KeepAlive,
+    BaseTransition: BaseTransition,
+    withDirectives: withDirectives,
+    useSSRContext: useSSRContext,
+    ssrContextKey: ssrContextKey,
+    createRenderer: createRenderer,
+    createHydrationRenderer: createHydrationRenderer,
+    queuePostFlushCb: queuePostFlushCb,
+    warn: warn,
+    handleError: handleError,
+    callWithErrorHandling: callWithErrorHandling,
+    callWithAsyncErrorHandling: callWithAsyncErrorHandling,
+    resolveComponent: resolveComponent,
+    resolveDirective: resolveDirective,
+    resolveDynamicComponent: resolveDynamicComponent,
+    registerRuntimeCompiler: registerRuntimeCompiler,
+    useTransitionState: useTransitionState,
+    resolveTransitionHooks: resolveTransitionHooks,
+    setTransitionHooks: setTransitionHooks,
+    getTransitionRawChildren: getTransitionRawChildren,
+    get devtools () { return devtools; },
+    setDevtoolsHook: setDevtoolsHook,
+    withCtx: withCtx,
+    renderList: renderList,
+    toHandlers: toHandlers,
+    renderSlot: renderSlot,
+    createSlots: createSlots,
+    pushScopeId: pushScopeId,
+    popScopeId: popScopeId,
+    withScopeId: withScopeId,
+    openBlock: openBlock,
+    createBlock: createBlock,
+    setBlockTracking: setBlockTracking,
+    createTextVNode: createTextVNode,
+    createCommentVNode: createCommentVNode,
+    createStaticVNode: createStaticVNode,
+    toDisplayString: toDisplayString,
+    camelize: camelize,
+    capitalize: capitalize,
+    transformVNodeArgs: transformVNodeArgs,
+    version: version,
+    ssrUtils: ssrUtils
+  });
+function compileToFunction(template, options) {
+    if (!isString(template)) {
+        if (template.nodeType) {
+            template = template.innerHTML;
+        }
+        else {
+             warn(`invalid template option: `, template);
+            return NOOP;
+        }
+    }
+    const key = template;
+    const cached = compileCache[key];
+    if (cached) {
+        return cached;
+    }
+    if (template[0] === '#') {
+        const el = document.querySelector(template);
+        if ( !el) {
+            warn(`Template element not found or is empty: ${template}`);
+        }
+        // __UNSAFE__
+        // Reason: potential execution of JS expressions in in-DOM template.
+        // The user must make sure the in-DOM template is trusted. If it's rendered
+        // by the server, the template should not contain any user data.
+        template = el ? el.innerHTML : ``;
+    }
+    const { code } = compile$1(template, extend({
+        hoistStatic: true,
+        onError(err) {
+            {
+                const message = `Template compilation error: ${err.message}`;
+                const codeFrame = err.loc &&
+                    generateCodeFrame(template, err.loc.start.offset, err.loc.end.offset);
+                warn(codeFrame ? `${message}\n${codeFrame}` : message);
+            }
+        }
+    }, options));
+    // The wildcard import results in a huge object with every export
+    // with keys that cannot be mangled, and can be quite heavy size-wise.
+    // In the global build we know `Vue` is available globally so we can avoid
+    // the wildcard object.
+    const render = ( new Function('Vue', code)(runtimeDom));
+    render._rc = true;
+    return (compileCache[key] = render);
+}
