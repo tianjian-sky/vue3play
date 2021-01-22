@@ -821,6 +821,7 @@ const patch = (n1, n2, container, anchor = null, parentComponent = null, parentS
                         }
                         return;
                     }
+                    // setupRenderEffect(instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized);
                     setupRenderEffect(instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized);
                     {
                         popWarningContext();
@@ -1920,6 +1921,151 @@ const patch = (n1, n2, container, anchor = null, parentComponent = null, parentS
 
 
 
+/*
+* updateComponent
+*/
 
+const updateComponent = (n1, n2, optimized) => {
+    const instance = (n2.component = n1.component);
+    if (shouldUpdateComponent(n1, n2, optimized)) {
+        if (
+            instance.asyncDep &&
+            !instance.asyncResolved) {
+            // async & still pending - just update props and slots
+            // since the component's reactive effect for render isn't set-up yet
+            {
+                pushWarningContext(n2);
+            }
+            updateComponentPreRender(instance, n2, optimized);
+            {
+                popWarningContext();
+            }
+            return;
+        }
+        else {
+            // normal update
+            instance.next = n2;
+            // in case the child component is also queued, remove it to avoid
+            // double updating the same child component in the same flush.
+            invalidateJob(instance.update);
+            // instance.update is the reactive effect runner.
+            instance.update();
+        }
+    }
+    else {
+        // no update needed. just copy over properties
+        n2.component = n1.component;
+        n2.el = n1.el;
+        instance.vnode = n2;
+    }
+};
+
+
+    function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
+        const { props: prevProps, children: prevChildren, component } = prevVNode;
+        const { props: nextProps, children: nextChildren, patchFlag } = nextVNode;
+        const emits = component.emitsOptions;
+        // Parent component's render function was hot-updated. Since this may have
+        // caused the child component's slots content to have changed, we need to
+        // force the child to update as well.
+        if ( (prevChildren || nextChildren) && isHmrUpdating) {
+            return true;
+        }
+        // force child update for runtime directive or transition on component vnode.
+        if (nextVNode.dirs || nextVNode.transition) {
+            return true;
+        }
+        if (optimized && patchFlag > 0) {
+            if (patchFlag & 1024 /* DYNAMIC_SLOTS */) {
+                // slot content that references values that might have changed,
+                // e.g. in a v-for
+                return true;
+            }
+
+            /*
+            *function buildProps(node, context, props = node.props, ssr = false) 
+            *
+            * if (hasDynamicKeys) {
+            *    patchFlag |= 16 // FULL_PROPS
+            * }
+            * if (dynamicPropNames.length) {
+            *        patchFlag |= 8 // PROPS
+            * }
+            */
+
+            if (patchFlag & 16 /* FULL_PROPS */) {
+                if (!prevProps) {
+                    return !!nextProps;
+                }
+                // presence of this flag indicates props are always non-null
+                return hasPropsChanged(prevProps, nextProps, emits);
+            }
+            else if (patchFlag & 8 /* PROPS */) {
+                const dynamicProps = nextVNode.dynamicProps;
+                for (let i = 0; i < dynamicProps.length; i++) {
+                    const key = dynamicProps[i];
+                    if (nextProps[key] !== prevProps[key] &&
+                        !isEmitListener(emits, key)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        else {
+            // this path is only taken by manually written render functions
+            // so presence of any children leads to a forced update
+            if (prevChildren || nextChildren) {
+                if (!nextChildren || !nextChildren.$stable) {
+                    return true;
+                }
+            }
+            if (prevProps === nextProps) {
+                return false;
+            }
+            if (!prevProps) {
+                return !!nextProps;
+            }
+            if (!nextProps) {
+                return true;
+            }
+            return hasPropsChanged(prevProps, nextProps, emits);
+        }
+        return false;
+    }
+
+    function hasPropsChanged(prevProps, nextProps, emitsOptions) {
+        const nextKeys = Object.keys(nextProps);
+        if (nextKeys.length !== Object.keys(prevProps).length) {
+            return true;
+        }
+        for (let i = 0; i < nextKeys.length; i++) {
+            const key = nextKeys[i];
+            if (nextProps[key] !== prevProps[key] &&
+                !isEmitListener(emitsOptions, key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Check if an incoming prop key is a declared emit event listener.
+    // e.g. With `emits: { click: null }`, props named `onClick` and `onclick` are
+    // both considered matched listeners.
+    function isEmitListener(options, key) {
+        if (!options || !isOn(key)) {
+            return false;
+        }
+        key = key.replace(/Once$/, '');
+        return (hasOwn(options, key[2].toLowerCase() + key.slice(3)) ||
+            hasOwn(options, key.slice(2)));
+    }
+
+
+    function invalidateJob(job) {
+        const i = queue.indexOf(job);
+        if (i > -1) {
+            queue[i] = null;
+        }
+    }
 
 

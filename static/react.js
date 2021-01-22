@@ -928,11 +928,8 @@ function applyOptions(instance, options, deferredData = [], deferredWatch = [], 
         }
 
         
-        const pendingPreFlushCbs = [];
-        let activePreFlushCbs = null;
-        let preFlushIndex = 0;
-        const pendingPostFlushCbs = [];
-        let activePostFlushCbs = null;
+        let isFlushing = false;
+ 
 
         function queuePreFlushCb(cb) {
             queueCb(cb, activePreFlushCbs, pendingPreFlushCbs, preFlushIndex);
@@ -961,6 +958,12 @@ function applyOptions(instance, options, deferredData = [], deferredWatch = [], 
                 currentFlushPromise = resolvedPromise.then(flushJobs);
             }
         }
+            function invalidateJob(job) {
+                const i = queue.indexOf(job);
+                if (i > -1) {
+                    queue[i] = null;
+                }
+            }
             function flushJobs(seen) {
                 isFlushPending = false;
                 isFlushing = true;
@@ -1018,6 +1021,164 @@ function applyOptions(instance, options, deferredData = [], deferredWatch = [], 
             }
         }
 
+/*
+* render effect
+*/
+
+const mountComponent = (initialVNode, container, anchor, parentComponent, parentSuspense, isSVG, optimized) => {
+    // ...
+    setupRenderEffect(instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized);
+    // ...
+}
+
+const setupRenderEffect = (instance, initialVNode, container, anchor, parentSuspense, isSVG, optimized) => {
+    // create reactive effect for rendering
+    instance.update = effect(function componentEffect() {
+        if (!instance.isMounted) {
+            let vnodeHook;
+            const { el, props } = initialVNode;
+            const { bm, m, parent } = instance;
+            // beforeMount hook
+            if (bm) {
+                invokeArrayFns(bm);
+            }
+            // onVnodeBeforeMount
+            if ((vnodeHook = props && props.onVnodeBeforeMount)) {
+                invokeVNodeHook(vnodeHook, parent, initialVNode);
+            }
+            // render
+            {
+                startMeasure(instance, `render`);
+            }
+            const subTree = (instance.subTree = renderComponentRoot(instance));
+            {
+                endMeasure(instance, `render`);
+            }
+            if (el && hydrateNode) {
+                {
+                    startMeasure(instance, `hydrate`);
+                }
+                // vnode has adopted host node - perform hydration instead of mount.
+                hydrateNode(initialVNode.el, subTree, instance, parentSuspense);
+                {
+                    endMeasure(instance, `hydrate`);
+                }
+            }
+            else {
+                {
+                    startMeasure(instance, `patch`);
+                }
+                patch(null, subTree, container, anchor, instance, parentSuspense, isSVG);
+                {
+                    endMeasure(instance, `patch`);
+                }
+                initialVNode.el = subTree.el;
+            }
+            // mounted hook
+            if (m) {
+                queuePostRenderEffect(m, parentSuspense);
+            }
+            // onVnodeMounted
+            if ((vnodeHook = props && props.onVnodeMounted)) {
+                queuePostRenderEffect(() => {
+                    invokeVNodeHook(vnodeHook, parent, initialVNode);
+                }, parentSuspense);
+            }
+            // activated hook for keep-alive roots.
+            // #1742 activated hook must be accessed after first render
+            // since the hook may be injected by a child keep-alive
+            const { a } = instance;
+            if (a &&
+                initialVNode.shapeFlag & 256 /* COMPONENT_SHOULD_KEEP_ALIVE */) {
+                queuePostRenderEffect(a, parentSuspense);
+            }
+            instance.isMounted = true;
+        }
+        else {
+            // updateComponent
+            // This is triggered by mutation of component's own state (next: null)
+            // OR parent calling processComponent (next: VNode)
+            let { next, bu, u, parent, vnode } = instance;
+            let originNext = next;
+            let vnodeHook;
+            {
+                pushWarningContext(next || instance.vnode);
+            }
+            if (next) {
+                updateComponentPreRender(instance, next, optimized);
+            }
+            else {
+                next = vnode;
+            }
+            next.el = vnode.el;
+            // beforeUpdate hook
+            if (bu) {
+                invokeArrayFns(bu);
+            }
+            // onVnodeBeforeUpdate
+            if ((vnodeHook = next.props && next.props.onVnodeBeforeUpdate)) {
+                invokeVNodeHook(vnodeHook, parent, next, vnode);
+            }
+            // render
+            {
+                startMeasure(instance, `render`);
+            }
+            const nextTree = renderComponentRoot(instance);
+            {
+                endMeasure(instance, `render`);
+            }
+            const prevTree = instance.subTree;
+            instance.subTree = nextTree;
+            // reset refs
+            // only needed if previous patch had refs
+            if (instance.refs !== EMPTY_OBJ) {
+                instance.refs = {};
+            }
+            {
+                startMeasure(instance, `patch`);
+            }
+            patch(prevTree, nextTree, 
+            // parent may have changed if it's in a teleport
+            hostParentNode(prevTree.el), 
+            // anchor may have changed if it's in a fragment
+            getNextHostNode(prevTree), instance, parentSuspense, isSVG);
+            {
+                endMeasure(instance, `patch`);
+            }
+            next.el = nextTree.el;
+            if (originNext === null) {
+                // self-triggered update. In case of HOC, update parent component
+                // vnode el. HOC is indicated by parent instance's subTree pointing
+                // to child component's vnode
+                updateHOCHostEl(instance, nextTree.el);
+            }
+            // updated hook
+            if (u) {
+                queuePostRenderEffect(u, parentSuspense);
+            }
+            // onVnodeUpdated
+            if ((vnodeHook = next.props && next.props.onVnodeUpdated)) {
+                queuePostRenderEffect(() => {
+                    invokeVNodeHook(vnodeHook, parent, next, vnode);
+                }, parentSuspense);
+            }
+            {
+                devtoolsComponentUpdated(instance);
+            }
+            {
+                popWarningContext();
+            }
+        }
+    },  createDevEffectOptions(instance) );
+};
+        function createDevEffectOptions(instance) {
+            return {
+                scheduler: queueJob,
+                allowRecurse: true,
+                onTrack: instance.rtc ? e => invokeArrayFns(instance.rtc, e) : void 0,
+                onTrigger: instance.rtg ? e => invokeArrayFns(instance.rtg, e) : void 0
+            };
+        }
 
 
 /*

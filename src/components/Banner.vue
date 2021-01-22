@@ -19,18 +19,24 @@
 </template>
 
 <script>
-import { inject } from 'vue'
+import { inject, onMounted } from 'vue'
 
 export default {
   name: 'Banner',
   props: {
-    msg: String
+    msg: String,
+    'hello-a': Number
   },
   setup(props) {
     console.log('setup api:', props) // { user: '' }
 
     const userLocation = inject('location', 'The Universe')
     const userGeolocation = inject('geolocation')
+
+    onMounted(() => {
+      console.log('props', props['helloA'], props['hello-a'])
+    })
+
 
     return {
       userLocation,

@@ -1,7 +1,7 @@
 <template>
   <div class="home">
     <img alt="Vue logo" src="../assets/logo.png">
-    <Banner msg="Welcome to Your Vue.js App"/>
+    <Banner msg="Welcome to Your Vue.js App"  v-bind="{'hello-a': 1, 'hello-b': 2}"/>
     <Heros msg="To be continued..."/>
     <button @click="changeProvide">change provide</button>
   </div>
