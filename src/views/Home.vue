@@ -4,6 +4,7 @@
     <Banner msg="Welcome to Your Vue.js App"  v-bind="{'hello-a': 1, 'hello-b': 2}"/>
     <Heros msg="To be continued..."/>
     <button @click="changeProvide">change provide</button>
+    <button @click="changeDKey" v-bind:[dkey]="3">change dynamic key</button>
   </div>
 </template>
 
@@ -65,6 +66,10 @@ export default {
     provide('location', location)
     provide('geolocation', geolocation)
 
+    // v-bind:动态key
+    const dynamicKey1 = ref('d1')
+    const dynamicKey2 = ref('d2')
+    const dkey = ref('dynamicKey1')
 
     onBeforeMount(() => {
       console.warn('home on befure mount from setup')
@@ -76,9 +81,18 @@ export default {
     setTimeout(() => {
       console.warn('races from setup 1000ms later:', races.value)
     }, 1000);
+
+    const changeDKey = function () {
+      const id = dkey.value.match(/\d/)[0]
+      dkey.value = `dynamicKey${id == 1 ? 2 : 1 }`
+    }
     return {
+      dynamicKey1,
+      dynamicKey2,
       geolocation,
-      location
+      location,
+      changeDKey,
+      dkey
     }
   },
   methods: {
