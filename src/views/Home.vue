@@ -5,6 +5,7 @@
     <Heros msg="To be continued..."/>
     <button @click="changeProvide">change provide</button>
     <button @click="changeDKey" v-bind:[dkey]="3">change dynamic key</button>
+    <teleportContent/>
   </div>
 </template>
 
@@ -13,6 +14,7 @@
 import Banner from '@/components/Banner'
 import Heros from '@/components/Heros.vue'
 import RacesV2 from '@/components/RacesV2.vue'
+import teleportContent from './teleport'
 import {ref, reactive, provide,/*  toRefs, watch, computed, */ onBeforeMount, onMounted} from 'vue'
 
 export default {
@@ -20,6 +22,7 @@ export default {
   components: {
     Heros,
     Banner,
+    teleportContent,
   },
   /** ！！
    * When setup is executed, the component instance has not been created yet. As a result, you will only be able to access the following properties:
