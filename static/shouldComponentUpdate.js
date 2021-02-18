@@ -1,3 +1,55 @@
+/*
+* instance.update
+*/
+
+/*
+* mountComponent -> setupRenderEffect -> instance.update = effect(function componentEffect() {...}
+*/
+
+
+/*
+* patch -> processComponent -> updateComponent -> shouldUpdateComponent -?-> instance.update
+*                           |-> mountComponent
+*/
+
+
+const updateComponent = (n1, n2, optimized) => {
+    const instance = (n2.component = n1.component);
+    if (shouldUpdateComponent(n1, n2, optimized)) {
+        if (
+            instance.asyncDep &&
+            !instance.asyncResolved) {
+            // async & still pending - just update props and slots
+            // since the component's reactive effect for render isn't set-up yet
+            {
+                pushWarningContext(n2);
+            }
+            updateComponentPreRender(instance, n2, optimized);
+            {
+                popWarningContext();
+            }
+            return;
+        }
+        else {
+            // normal update
+            instance.next = n2;
+            // in case the child component is also queued, remove it to avoid
+            // double updating the same child component in the same flush.
+            invalidateJob(instance.update);
+            // instance.update is the reactive effect runner.
+            instance.update();
+        }
+    }
+    else {
+        // no update needed. just copy over properties
+        n2.component = n1.component;
+        n2.el = n1.el;
+        instance.vnode = n2;
+    }
+};
+
+
+
 function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
     const { props: prevProps, children: prevChildren, component } = prevVNode;
     const { props: nextProps, children: nextChildren, patchFlag } = nextVNode;
@@ -70,6 +122,20 @@ function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
     return false;
 }
 
+        function hasPropsChanged(prevProps, nextProps, emitsOptions) {
+            const nextKeys = Object.keys(nextProps);
+            if (nextKeys.length !== Object.keys(prevProps).length) {
+                return true;
+            }
+            for (let i = 0; i < nextKeys.length; i++) {
+                const key = nextKeys[i];
+                if (nextProps[key] !== prevProps[key] &&
+                    !isEmitListener(emitsOptions, key)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     /* FULL_PROPS */
     /*
     *   hasDynamicKeys = true;
@@ -207,6 +273,13 @@ function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
                             }
                             continue;
                         }
+                        /**
+                         *  directiveTransform: {
+                                on: transformOn,
+                                bind: transformBind,
+                                model: transformModel
+                            }
+                         */
                         const directiveTransform = context.directiveTransforms[name];
                         if (directiveTransform) {
                             // has built-in directive transform.
@@ -271,6 +344,41 @@ function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
                     patchFlag,
                     dynamicPropNames
                 };
+            }
+
+            // const isStaticExp = (p) => p.type === 4 /* SIMPLE_EXPRESSION */ && p.isStatic;
+            // isStaticExp ---> hasDynamicKeys
+            function createObjectExpression(properties, loc = locStub) {
+                return {
+                    type: 15 /* JS_OBJECT_EXPRESSION */,
+                    loc,
+                    properties
+                };
+            }
+            function dedupeProperties(properties) {
+                const knownProps = new Map();
+                const deduped = [];
+                for (let i = 0; i < properties.length; i++) {
+                    const prop = properties[i];
+                    // dynamic keys are always allowed
+                    if (prop.key.type === 8 /* COMPOUND_EXPRESSION */ || !prop.key.isStatic) {
+                        deduped.push(prop);
+                        continue;
+                    }
+                    const name = prop.key.content;
+                    const existing = knownProps.get(name);
+                    if (existing) {
+                        if (name === 'style' || name === 'class' || name.startsWith('on')) {
+                            mergeAsArray(existing, prop);
+                        }
+                        // unexpected duplicate, should have emitted error during parse
+                    }
+                    else {
+                        knownProps.set(name, prop);
+                        deduped.push(prop);
+                    }
+                }
+                return deduped;
             }
 
     /* PROPS */
@@ -383,3 +491,54 @@ function shouldUpdateComponent(prevVNode, nextVNode, optimized) {
             loc
         };
     }
+
+
+
+    // 1.shouldComponentUpdate
+
+    // 2. transformOn
+    // 2.1 cacheable
+    //      context.cacheHandlers && !exp;
+    // 2.2 isStatic
+        // if (arg.isStatic) {
+        //     const rawName = arg.content;
+        //     // for @vnode-xxx event listeners, auto convert it to camelCase
+        //     const normalizedName = rawName.startsWith(`vnode`)
+        //         ? capitalize(camelize(rawName))
+        //         : capitalize(rawName);
+        //     eventName = createSimpleExpression(`on${normalizedName}`, true, arg.loc);
+        // }
+        // else {
+        //     eventName = createCompoundExpression([
+        //         `"on" + ${context.helperString(CAPITALIZE)}(`,
+        //         arg,
+        //         `)`
+        //     ]);
+        // }
+
+        // 3. transformBind
+        
+            // SIMPLE_EXPRESSION
+            // COMPOUND_EXPRESSION 多个textNode
+
+                // const transformText = (node, context) => {
+                //     // ...
+                //         for (let j = i + 1; j < children.length; j++) {
+                //             const next = children[j];
+                //             if (isText(next)) {
+                //                 if (!currentContainer) {
+                //                     currentContainer = children[i] = {
+                //                         type: 8 /* COMPOUND_EXPRESSION */,
+                //                         loc: child.loc,
+                //                         children: [child]
+                //                     };
+                //                 }
+                //                 // merge adjacent text node into current
+                //                 currentContainer.children.push(` + `, next);
+                //                 children.splice(j, 1);
+                //                 j--;
+                //             }
+
+                //     // ...
+                // }
+        // 4.transformModel

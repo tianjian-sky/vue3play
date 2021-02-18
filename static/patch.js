@@ -1029,7 +1029,9 @@ const processElement = (n1, n2, container, anchor, parentComponent, parentSuspen
 
 
 
-
+    /*
+    * 可以根据shapeFlg有选择更新，粒度更细
+    */
 
     const patchElement = (n1, n2, parentComponent, parentSuspense, isSVG, optimized) => {
         const el = (n2.el = n1.el);
@@ -1125,8 +1127,62 @@ const processElement = (n1, n2, container, anchor, parentComponent, parentSuspen
         }
     };
 
-
-
+            const patchProps = (el, vnode, oldProps, newProps, parentComponent, parentSuspense, isSVG) => {
+                if (oldProps !== newProps) {
+                    for (const key in newProps) {
+                        if (isReservedProp(key))
+                            continue;
+                        const next = newProps[key];
+                        const prev = oldProps[key];
+                        if (next !== prev ||
+                            (hostForcePatchProp && hostForcePatchProp(el, key))) {
+                            hostPatchProp(el, key, prev, next, isSVG, vnode.children, parentComponent, parentSuspense, unmountChildren);
+                        }
+                    }
+                    if (oldProps !== EMPTY_OBJ) {
+                        for (const key in oldProps) {
+                            if (!isReservedProp(key) && !(key in newProps)) {
+                                hostPatchProp(el, key, oldProps[key], null, isSVG, vnode.children, parentComponent, parentSuspense, unmountChildren);
+                            }
+                        }
+                    }
+                }
+            };
+            const patchProp = (el, key, prevValue, nextValue, isSVG = false, prevChildren, parentComponent, parentSuspense, unmountChildren) => {
+                switch (key) {
+                    // special
+                    case 'class':
+                        patchClass(el, nextValue, isSVG);
+                        break;
+                    case 'style':
+                        patchStyle(el, prevValue, nextValue);
+                        break;
+                    default:
+                        if (isOn(key)) {
+                            // ignore v-model listeners
+                            if (!isModelListener(key)) {
+                                patchEvent(el, key, prevValue, nextValue, parentComponent);
+                            }
+                        }
+                        else if (shouldSetAsProp(el, key, nextValue, isSVG)) {
+                            patchDOMProp(el, key, nextValue, prevChildren, parentComponent, parentSuspense, unmountChildren);
+                        }
+                        else {
+                            // special case for <input v-model type="checkbox"> with
+                            // :true-value & :false-value
+                            // store value as dom properties since non-string values will be
+                            // stringified.
+                            if (key === 'true-value') {
+                                el._trueValue = nextValue;
+                            }
+                            else if (key === 'false-value') {
+                                el._falseValue = nextValue;
+                            }
+                            patchAttr(el, key, nextValue, isSVG);
+                        }
+                        break;
+                }
+            };
 
 
 
